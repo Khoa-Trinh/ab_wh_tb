@@ -4,7 +4,6 @@ $ProgressPreference = 'SilentlyContinue'
 $folderPath = $PSScriptRoot
 if (-not $folderPath) { $folderPath = Get-Location }
 
-
 # Helper to verify EXE
 function Test-IsRealExe($path) {
     if (-not (Test-Path $path)) { return $false }
@@ -17,22 +16,23 @@ function Test-IsRealExe($path) {
         if ($read -lt 2) { return $false }
         # Check for MZ (EXE) or PK (ZIP)
         return (($buf[0] -eq 0x4D -and $buf[1] -eq 0x5A) -or ($buf[0] -eq 0x50 -and $buf[1] -eq 0x4B))
-    } catch { return $false }
+    }
+    catch { return $false }
 }
 
 # Session Data
-$SavedCookie = "cf_clearance=TGnpUYVUqoNkiBEEOn0rH1JJG2YrF.BlaTotZjGLIno-1775922631-1.2.1.1-XfPaKZOSRtKOaBBqaQtBPlX98Kcqq5gzkhjun5h1kmGKWtgtsbrpA5ZP5rda5rWBnkVxSqJt37PsLNuPTnQC0LJdkd0H5aqTChRIUwiFMcQc78cofGP5_f8IMCn0_RKz.hDqzo.nsrVaJ1lUIm2qn0kXgVNqqgwkje2l_mjD8px7T3ES5HG7cEPJwhDfkaK25oY4wVzR9NMzHS1zK7RlyYO7UQ6RsNOYXWYYRG0xR0tucUVpLKqMv54jVSNxk9BTHXEablId9hyOvD9CeqcgGg53DYzw44nHImiRQkEPVYjlCeJhi5iKkZuqTZ9nbsnLlthoq6P5B_SeAfyf9js_tg"
+$SavedCookie = "cf_clearance=22AuyLeFmRsXrVRGH0gStcFzeMUI5snc6vkz4bAT8KE-1776090317-1.2.1.1-INs_yv08vb8LuF.fKUavcwds3qe8NC3JMxutU1BKQ2wVpcYQmDWHWQLukXui3jOlSwp.99tpoD0QHxL2EtVEXG8FrsKqxD3UU.rID9QJh4ttM_6We1bc1KGMJcE.DOLc44bcA9.y3OPCMibDgK5_MJvsYUEIs2Cw1XFLNuE4DPHdmkjJFkirdmZJVm.moWyKljqInOvMvveLpyP.971Qqrl1ov_7WOdwjr__KYHH_Ieg5TRHJpw_RmOggze3mqdl6djCv92PdZHv.j21fndK7YsYlL62Le8Ceysa6NQgQHlzHaSQ2Oq.3HemMx.3XWAyqc6SwXQCKqHVD0C9.wDlIg"
 $SavedUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 $SavedSecCH = @{
-    "sec-ch-ua-mobile" = '?0'
-    "sec-ch-ua-bitness" = ''
-    "sec-ch-ua-platform" = ''
-    "sec-ch-ua-model" = ''
-    "sec-ch-ua-platform-version" = ''
-    "sec-ch-ua-full-version" = ''
+    "sec-ch-ua"                   = ''
     "sec-ch-ua-full-version-list" = ''
-    "sec-ch-ua-arch" = ''
-    "sec-ch-ua" = ''
+    "sec-ch-ua-platform-version"  = ''
+    "sec-ch-ua-mobile"            = '?0'
+    "sec-ch-ua-full-version"      = ''
+    "sec-ch-ua-model"             = ''
+    "sec-ch-ua-bitness"           = ''
+    "sec-ch-ua-arch"              = ''
+    "sec-ch-ua-platform"          = ''
 }
 
 $downloadUrl = "https://undetek.com/download/download.php"
@@ -143,19 +143,31 @@ function Update-ScriptPersistence($sessionData) {
 }
 function Get-ServerInfo {
     param($cf, $ua, $url)
+
     try {
+        # -I gets headers. If -L is included, curl shows headers for ALL redirects in the chain.
         $curlArgs = @("-s", "-L", "-I", "-H", "Cookie: $cf", "-A", $ua)
         foreach ($k in $SavedSecCH.Keys) { 
             if ($SavedSecCH[$k]) { $curlArgs += @("-H", "${k}: $($SavedSecCH[$k])") } 
         }
         $curlArgs += $url
         $headers = & curl.exe $curlArgs 2>$null
+        
+        # 1. Check for Maintenance/Redirects (301, 302, 307)
+        # If the first status line is a redirect, we treat it as maintenance for this script.
+        $firstLine = $headers | Select-Object -First 1
+        if ($firstLine -match "HTTP/.* (301|302|307)") {
+            return @{ Status = "Maintenance"; Version = $null }
+        }
+
+        # 2. Check for success and filename
         $disp = $headers | Select-String "Content-Disposition:"
         if ($disp -match 'filename="undetek-v(?<v>[\d\.]+)\.(exe|zip)"') {
-            return @{ Status="OK"; Version=$Matches['v'] }
+            return @{ Status = "OK"; Version = $Matches['v'] }
         }
-    } catch {}
-    return @{ Status="Error"; Version=$null }
+    }
+    catch {}
+    return @{ Status = "Error"; Version = $null }
 }
 
 try {
@@ -174,9 +186,26 @@ try {
     if ($latestVersion) {
         Write-Host "Server Version: v$latestVersion" -ForegroundColor Gray
         $exeName = "undetek-v$latestVersion.exe"
-    } else {
+    }
+    else {
         Write-Host "[!] Could not verify latest version (Cloudflare block?)" -ForegroundColor Gray
-        $exeName = "undetek-v10.25.exe"
+        $newData = Show-BypassTips -url "https://undetek.com"
+        if ($newData) {
+            $SavedCookie = $newData.Cookie
+            if ($newData.UA) { $SavedUA = $newData.UA }
+            if ($newData.Headers.Count -gt 0) { $SavedSecCH = $newData.Headers }
+            Update-ScriptPersistence $newData
+            # Try once more to get version with fresh cookies
+            $info = Get-ServerInfo -cf $SavedCookie -ua $SavedUA -url $downloadUrl
+            $latestVersion = $info.Version
+        }
+        
+        if ($latestVersion) {
+            $exeName = "undetek-v$latestVersion.exe"
+        }
+        else {
+            $exeName = "undetek-v10.25.exe"
+        }
     }
 
     $exePath = Join-Path $folderPath $exeName
@@ -221,8 +250,10 @@ try {
                         $success = $true
                     }
                     Remove-Item $tempZip, $extractPath -Recurse -Force
-                } else { $success = $true }
-            } else {
+                }
+                else { $success = $true }
+            }
+            else {
                 if (Test-Path $exePath) {
                     # If it's HTML, it might be printing it. We remove it and prompt.
                     Remove-Item $exePath -Force
@@ -233,16 +264,19 @@ try {
                     if ($newData.UA) { $SavedUA = $newData.UA }
                     if ($newData.Headers.Count -gt 0) { $SavedSecCH = $newData.Headers }
                     Update-ScriptPersistence $newData
-                } else { exit }
+                }
+                else { exit }
             }
         }
     }
 
     Write-Host "Health Check: OK ($exeName is ready)." -ForegroundColor Green
     Write-Host "Launching $exeName..." -ForegroundColor Yellow
+    # NOTE: Some loaders open a browser tab on launch (announcements/login). 
+    # We wait longer to let that finish so we can steal focus back.
     Start-Process -FilePath $exePath
     Write-Host "Waiting for loader to initialize..." -ForegroundColor Gray
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 4
 
     
     # 2. Get and Inject PIN
@@ -266,7 +300,8 @@ try {
                 throw "Cloudflare block or 403 detected on PIN retrieval." 
             }
 
-            if ($pin -and $pin.Length -lt 20) { # Pins are usually short
+            if ($pin -and $pin.Length -lt 20) {
+                # Pins are usually short
                 Write-Host "PIN found: $pin" -ForegroundColor White
                 # P/Invoke for robust window management (needed for Ghost Toolbox/Lite OS)
                 $user32Source = @"
@@ -289,7 +324,7 @@ try {
                 $ws = New-Object -ComObject WScript.Shell
                 $injected = $false
                 $startTime = [DateTime]::Now
-                Write-Host "--- Injection Debug Mode ---" -ForegroundColor Cyan
+                Write-Host "--- Injection Process ---" -ForegroundColor Cyan
                 
                 # Escape special SendKeys characters in PIN (+, ^, %, ~, (, ), {, })
                 $safePin = ""
@@ -303,9 +338,9 @@ try {
                 
                 # Compatibility Fix: Using standard IF/ELSE instead of Ternary operator
                 if ($isAdmin) { $adminColor = "Green" } else { $adminColor = "Yellow" }
-                Write-Host "[DEBUG] Script elevated: $isAdmin" -ForegroundColor $adminColor
+                # Write-Host "[INFO] Elevation: $isAdmin" -ForegroundColor $adminColor
 
-                for ($i=1; $i -le 60; $i++) {
+                for ($i = 1; $i -le 60; $i++) {
                     $targetTitle = $null
                     
                     # 1. Process Discovery
@@ -313,20 +348,21 @@ try {
                     $procMatch = Get-Process | Where-Object { $_.ProcessName -like "*undetek*" } | Select-Object -First 1
                     
                     if ($null -eq $procMatch) {
-                        if ($i % 10 -eq 0) { Write-Host "[DEBUG] [$i/60] Looking for process '*undetek*'... Not found yet." -ForegroundColor DarkGray }
-                    } else {
+                        if ($i % 10 -eq 0) { Write-Host "Searching for loader window... ($i/60)" -ForegroundColor DarkGray }
+                    }
+                    else {
                         # 2. Title Discovery
                         $titlesToTry = @()
                         if ($procMatch.MainWindowTitle) { 
                             $titlesToTry += $procMatch.MainWindowTitle 
-                            if ($i % 5 -eq 0) { Write-Host "[DEBUG] Found Window: '$($procMatch.MainWindowTitle)' (PID: $($procMatch.Id))" -ForegroundColor DarkGray }
+                            # Found Window: $($procMatch.MainWindowTitle)
                         }
-                        $titlesToTry += @("Undetek", "Undetek Loader", $exeName, $exeName.Replace(".exe",""))
+                        $titlesToTry += @("Undetek", "Undetek Loader", $exeName, $exeName.Replace(".exe", ""))
                         
                         # 3. Activation Attempt
                         # Strategy A: Try PID activation (Most reliable for WScript)
                         if ($ws.AppActivate($procMatch.Id)) {
-                            Write-Host "[DEBUG] MATCH! AppActivate(PID:$($procMatch.Id)) returned TRUE." -ForegroundColor Green
+                            # AppActivate(PID) success
                             $targetTitle = $procMatch.Id
                         } 
                         # Strategy B: Try Title activation
@@ -334,7 +370,7 @@ try {
                             foreach ($t in ($titlesToTry | Select-Object -Unique)) {
                                 if (-not $t) { continue }
                                 if ($ws.AppActivate($t)) {
-                                    Write-Host "[DEBUG] MATCH! AppActivate('$t') returned TRUE." -ForegroundColor Green
+                                    # AppActivate(Title) success
                                     $targetTitle = $t
                                     break
                                 }
@@ -343,7 +379,7 @@ try {
                         
                         # Strategy C: P/Invoke Force Focus (The 'Nuke' for Lite OS)
                         if (-not $targetTitle -and $procMatch.MainWindowHandle -ne 0) {
-                            Write-Host "[DEBUG] WScript failed. Forcing focus via User32..." -ForegroundColor Yellow
+                            # Forcing focus via User32...
                             if ([User32]::IsIconic($procMatch.MainWindowHandle)) {
                                 [User32]::ShowWindowAsync($procMatch.MainWindowHandle, 9) # SW_RESTORE
                             }
@@ -352,8 +388,9 @@ try {
                             # Check if we can activate it now by title since it's in foreground
                             if ($ws.AppActivate($procMatch.Id)) {
                                 $targetTitle = $procMatch.Id
-                                Write-Host "[DEBUG] Post-User32 AppActivate success." -ForegroundColor Green
-                            } else {
+                                # Post-User32 AppActivate success.
+                            }
+                            else {
                                 # Even if AppActivate fails, if we set foreground, SendKeys might still work
                                 $targetTitle = "FORCED_BY_USER32"
                             }
@@ -361,50 +398,48 @@ try {
                     }
 
                     if ($targetTitle) {
-                        Write-Host "[DEBUG] Focusing window aggressively..." -ForegroundColor Yellow
+                        Write-Host "Window found! Focusing and injecting PIN..." -ForegroundColor Yellow
                         try {
                             if ($targetTitle -ne "FORCED_BY_USER32") {
                                 # Double activation 'nudge'
                                 $ws.AppActivate($targetTitle) | Out-Null
                                 Start-Sleep -Milliseconds 300
                                 $ws.AppActivate($targetTitle) | Out-Null
-                            } else {
+                            }
+                            else {
                                 # Already focused by User32
                                 [User32]::SetForegroundWindow($procMatch.MainWindowHandle) | Out-Null
                             }
                             Start-Sleep -Milliseconds 500
                             
-                            Write-Host "[DEBUG] Clearing UI and focusing field..." -ForegroundColor DarkGray
-                            $ws.SendKeys("{ESC}") # Clear any tooltips/accidental menus
-                            Start-Sleep -Milliseconds 200
-                            $ws.SendKeys("{TAB}") # Ensure input field is focused
+                            # Injection logic
+                            $ws.SendKeys("{TAB}")
                             Start-Sleep -Milliseconds 300
+                            $ws.SendKeys("^a")
+                            Start-Sleep -Milliseconds 100
+                            $ws.SendKeys("{BACKSPACE}")
+                            Start-Sleep -Milliseconds 200
                             
-                            Write-Host "[DEBUG] Sending PIN character-by-character..." -ForegroundColor Gray
                             foreach ($char in $safePin.ToCharArray()) {
                                 $ws.SendKeys($char)
-                                Start-Sleep -Milliseconds 50 # Small stable delay
+                                Start-Sleep -Milliseconds 60
                             }
                             
-                            Start-Sleep -Milliseconds 300
-                            Write-Host "[DEBUG] Pressing ENTER..." -ForegroundColor DarkGray
+                            Start-Sleep -Milliseconds 500
                             $ws.SendKeys("{ENTER}")
                             
-                            $elapsed = ([DateTime]::Now - $startTime).TotalSeconds
-                            Write-Host "[DEBUG] Injection sequence complete in $($elapsed.ToString('F1'))s." -ForegroundColor Green
+                            Write-Host "[+] Injection successful." -ForegroundColor Green
                             $injected = $true
                             break
-                        } catch {
-                            Write-Host "[DEBUG] ERROR during sequence: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                        catch {
+                            Write-Host "[!] Error during injection: $($_.Exception.Message)" -ForegroundColor Red
                         }
                     }
 
                     # Diagnostics if stuck
                     if ($i -eq 20) {
-                        Write-Host "[DEBUG] No window found after 20 attempts. Listing ALL open windows:" -ForegroundColor Yellow
-                        Get-Process | Where-Object { $_.MainWindowTitle } | Sort-Object MainWindowTitle | ForEach-Object {
-                            Write-Host "  > [$($_.ProcessName)] Title: '$($_.MainWindowTitle)'" -ForegroundColor DarkGray
-                        }
+                        # Write-Host "Checking for alternative windows..." -ForegroundColor Yellow
                     }
 
                     Start-Sleep -Milliseconds 500
@@ -417,10 +452,12 @@ try {
                     Write-Host "    Manual PIN: $pin" -ForegroundColor Yellow
                 }
                 $pinSuccess = $true
-            } else {
+            }
+            else {
                 throw "Unexpected PIN response format: $pin"
             }
-        } catch {
+        }
+        catch {
             Write-Host "PIN Access Error: $($_.Exception.Message)" -ForegroundColor Yellow
             $newData = Show-BypassTips -url "https://undetek.com/free-cs2-cheats-download/"
             if ($newData) {
@@ -428,10 +465,12 @@ try {
                 if ($newData.UA) { $SavedUA = $newData.UA }
                 if ($newData.Headers.Count -gt 0) { $SavedSecCH = $newData.Headers }
                 Update-ScriptPersistence $newData
-            } else { break }
+            }
+            else { break }
         }
     }
 
-} catch { Write-Host "ERROR: $($_)" -ForegroundColor Red }
+}
+catch { Write-Host "ERROR: $($_)" -ForegroundColor Red }
 
 Read-Host "`nDone. Press Enter to close"
